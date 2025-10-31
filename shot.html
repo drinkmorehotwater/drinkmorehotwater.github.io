@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>高射炮小游戏</title>
+    <style>
+      html, body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        background: radial-gradient(circle at 50% 20%, #0b1a2a, #08121f 55%, #070d18);
+        color: #e8f0ff;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Microsoft YaHei", "PingFang SC", sans-serif;
+        overflow: hidden;
+        cursor: crosshair;
+      }
+
+      #game {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+
+      .hud {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        padding: 10px 14px;
+        background: rgba(0, 16, 32, 0.5);
+        border: 1px solid rgba(128, 192, 255, 0.25);
+        border-radius: 10px;
+        backdrop-filter: blur(4px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+        user-select: none;
+      }
+      .hud .kills { font-weight: 700; }
+      .hud .help { font-size: 12px; opacity: 0.8; margin-top: 4px; }
+
+      .credit {
+        position: fixed;
+        right: 12px;
+        bottom: 12px;
+        font-size: 12px;
+        opacity: 0.7;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div class="hud">
+      <div>击落数量：<span id="kills" class="kills">0</span></div>
+      <div class="help">移动鼠标调整炮口角度，左键发射</div>
+    </div>
+    <div class="credit">Press R 清屏</div>
+
+    <script>
+      const canvas = document.getElementById('game');
+      const ctx = canvas.getContext('2d');
+      const killsEl = document.getElementById('kills');
+
+      let W = 0, H = 0, DPR = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+
+      function resize() {
+        W = window.innerWidth;
+        H = window.innerHeight;
+        canvas.style.width = W + 'px';
+        canvas.style.height = H + 'px';
+        canvas.width = W * DPR;
+        canvas.height = H * DPR;
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      // 炮台参数（位于左下角）
+      const gun = {
+        baseX: 40,           // 炮台底座左边距
+        baseY: () => H - 40, // 炮台底座底部距离
+        barrelLen: 90,       // 炮管长度
+        barrelWidth: 14,     // 炮管宽度
+        angle: -Math.PI / 4, // 初始角度（指向左下到右上）
+        cooldown: 0,
+        fireInterval: 200,   // 毫秒
+      };
+
+      const mouse = { x: W * 0.5, y: H * 0.5 };
+
+      // 实体容器
+      const bullets = [];
+      const planes = [];
+      const explosions = [];
+      let kills = 0;
+
+      // 工具函数
+      const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+      function rand(min, max) { return Math.random() * (max - min) + min; }
+
+      // 更新炮台角度根据鼠标
+      function updateGunAngle() {
+        const bx = gun.baseX;
+        const by = gun.baseY();
+        const dx = mouse.x - bx;
+        const dy = mouse.y - by;
+        // 限制炮口不要朝地面以下（略微允许负角，避免卡住）
+        let a = Math.atan2(dy, dx);
+        const minAngle = -Math.PI * 0.95; // 允许极少的下倾
+        const maxAngle = -0.05;           // 接近水平但略微上扬
+        gun.angle = clamp(a, minAngle, maxAngle);
+      }
+
+      // 绘制炮台
+      function drawGun() {
+        const bx = gun.baseX;
+        const by = gun.baseY();
+
+        // 地面与底座
+        ctx.fillStyle = '#102437';
+        ctx.fillRect(0, H - 24, Math.max(W, 1), 24);
+
+        ctx.fillStyle = '#29445f';
+        ctx.fillRect(bx - 28, by - 22, 56, 22);
+        ctx.strokeStyle = 'rgba(180,220,255,0.2)';
+        ctx.strokeRect(bx - 28, by - 22, 56, 22);
+
+        // 炮管
+        ctx.save();
+        ctx.translate(bx, by);
+        ctx.rotate(gun.angle);
+        ctx.fillStyle = '#88a9c8';
+        ctx.strokeStyle = '#cfe6ff';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.rect(0, -gun.barrelWidth/2, gun.barrelLen, gun.barrelWidth);
+        ctx.fill();
+        ctx.stroke();
+
+        // 炮口圈
+        ctx.beginPath();
+        ctx.arc(gun.barrelLen, 0, gun.barrelWidth/2, 0, Math.PI*2);
+        ctx.fillStyle = '#a5c4df';
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // 计算炮口位置
+      function barrelTip() {
+        const bx = gun.baseX, by = gun.baseY();
+        return {
+          x: bx + Math.cos(gun.angle) * gun.barrelLen,
+          y: by + Math.sin(gun.angle) * gun.barrelLen,
+        };
+      }
+
+      // 射击
+      function fire() {
+        const now = performance.now();
+        if (gun.cooldown > now) return;
+        gun.cooldown = now + gun.fireInterval;
+        const tip = barrelTip();
+        const speed = 700; // px/s
+        const vx = Math.cos(gun.angle) * speed;
+        const vy = Math.sin(gun.angle) * speed;
+        bullets.push({ x: tip.x, y: tip.y, vx, vy, r: 3.5, alive: true, trail: [] });
+      }
+
+      // 子弹更新与绘制
+      function updateBullets(dt) {
+        for (const b of bullets) {
+          b.x += b.vx * dt;
+          b.y += b.vy * dt;
+          b.trail.push({x:b.x, y:b.y});
+          if (b.trail.length > 8) b.trail.shift();
+          // 越界移除
+          if (b.x < -50 || b.x > W+50 || b.y < -50 || b.y > H+50) b.alive = false;
+        }
+        // 绘制拖尾
+        for (const b of bullets) {
+          for (let i = 0; i < b.trail.length; i++) {
+            const t = b.trail[i];
+            ctx.fillStyle = `rgba(200,220,255,${i / b.trail.length * 0.4})`;
+            ctx.beginPath();
+            ctx.arc(t.x, t.y, 1.6, 0, Math.PI*2);
+            ctx.fill();
+          }
+        }
+        // 绘制子弹
+        for (const b of bullets) {
+          ctx.fillStyle = '#e6f3ff';
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+          ctx.fill();
+        }
+        // 清理
+        for (let i = bullets.length - 1; i >= 0; i--) {
+          if (!bullets[i].alive) bullets.splice(i, 1);
+        }
+      }
+
+      // 飞机生成
+      let planeTimer = 0;
+      function spawnPlane() {
+        const fromRight = Math.random() < 0.7; // 大部分从右到左
+        const y = rand(80, H * 0.75);
+        const speed = rand(120, 220) * (fromRight ? -1 : 1);
+        const x = fromRight ? W + 60 : -60;
+        const size = rand(28, 42);
+        planes.push({ x, y, vx: speed, r: size * 0.55, size, alive: true });
+      }
+
+      // 飞机更新与绘制
+      function updatePlanes(dt) {
+        planeTimer -= dt;
+        if (planeTimer <= 0) {
+          spawnPlane();
+          planeTimer = rand(0.8, 1.6);
+        }
+        for (const p of planes) {
+          p.x += p.vx * dt;
+          if (p.x < -120 || p.x > W + 120) p.alive = false;
+        }
+        // 绘制简易飞机（机身+机翼）
+        for (const p of planes) {
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          const dir = Math.sign(p.vx) || 1;
+          ctx.scale(dir, 1);
+          ctx.fillStyle = '#b0c7dd';
+          ctx.strokeStyle = 'rgba(210,235,255,0.6)';
+          ctx.lineWidth = 1.2;
+          // 机身
+          ctx.beginPath();
+          ctx.roundRect(-p.size*0.5, -p.size*0.22, p.size, p.size*0.44, 10);
+          ctx.fill();
+          ctx.stroke();
+          // 机翼
+          ctx.beginPath();
+          ctx.moveTo(-p.size*0.2, -p.size*0.22);
+          ctx.lineTo(p.size*0.15, -p.size*0.5);
+          ctx.lineTo(p.size*0.35, -p.size*0.22);
+          ctx.closePath();
+          ctx.fillStyle = '#8aa6c2';
+          ctx.fill();
+          ctx.restore();
+        }
+        // 清理
+        for (let i = planes.length - 1; i >= 0; i--) {
+          if (!planes[i].alive) planes.splice(i, 1);
+        }
+      }
+
+      // 爆炸效果（粒子）
+      function createExplosion(x, y) {
+        const parts = [];
+        const count = 36;
+        for (let i = 0; i < count; i++) {
+          const a = rand(0, Math.PI*2);
+          const sp = rand(60, 280);
+          parts.push({ x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp, life: rand(0.4, 0.9), r: rand(2, 4) });
+        }
+        explosions.push({ parts, alive: true });
+      }
+
+      function updateExplosions(dt) {
+        for (const e of explosions) {
+          let aliveParts = 0;
+          for (const p of e.parts) {
+            p.life -= dt;
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.vx *= 0.985;
+            p.vy = p.vy * 0.985 + 30 * dt; // 重力轻微
+            if (p.life > 0) aliveParts++;
+            const alpha = Math.max(0, Math.min(1, p.life));
+            ctx.fillStyle = `rgba(255,220,140,${alpha})`;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+            ctx.fill();
+          }
+          if (!aliveParts) e.alive = false;
+        }
+        for (let i = explosions.length - 1; i >= 0; i--) {
+          if (!explosions[i].alive) explosions.splice(i, 1);
+        }
+      }
+
+      // 碰撞检测：子弹-飞机（圆与圆近似）
+      function checkCollisions() {
+        for (const b of bullets) {
+          if (!b.alive) continue;
+          for (const p of planes) {
+            if (!p.alive) continue;
+            const dx = b.x - p.x;
+            const dy = b.y - p.y;
+            const rr = (b.r + p.r);
+            if (dx*dx + dy*dy <= rr*rr) {
+              // 命中
+              b.alive = false;
+              p.alive = false;
+              createExplosion(p.x, p.y);
+              kills++;
+              killsEl.textContent = kills;
+              break;
+            }
+          }
+        }
+      }
+
+      // 背景星点
+      const stars = Array.from({ length: 100 }, () => ({
+        x: Math.random() * W,
+        y: Math.random() * H * 0.9,
+        r: Math.random() * 1.6 + 0.2,
+        tw: Math.random() * 1.5
+      }));
+      function drawStars(t) {
+        for (const s of stars) {
+          const alpha = 0.35 + 0.25 * Math.sin(t * 0.7 + s.tw);
+          ctx.fillStyle = `rgba(200,230,255,${alpha})`;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+          ctx.fill();
+        }
+      }
+
+      // 主循环
+      let last = performance.now();
+      function loop(now) {
+        const dt = Math.min(0.033, (now - last) / 1000); // 秒
+        last = now;
+
+        updateGunAngle();
+
+        ctx.clearRect(0,0,W,H);
+        drawStars(now/1000);
+        updatePlanes(dt);
+        updateBullets(dt);
+        checkCollisions();
+        updateExplosions(dt);
+        drawGun();
+
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+
+      // 事件绑定
+      canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        mouse.x = e.clientX - rect.left;
+        mouse.y = e.clientY - rect.top;
+      });
+      canvas.addEventListener('mousedown', (e) => {
+        if (e.button === 0) fire();
+      });
+      window.addEventListener('keydown', (e) => {
+        if (e.key.toLowerCase() === 'r') {
+          bullets.length = 0;
+          planes.length = 0;
+          explosions.length = 0;
+          kills = 0;
+          killsEl.textContent = kills;
+        }
+      });
+    </script>
+  </body>
+  </html>
