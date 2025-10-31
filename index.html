@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>二值转盘抽奖</title>
+    <style>
+      :root {
+        --color-yes: #ff6b6b; /* 打 */
+        --color-no: #4ecdc4;  /* 不打 */
+        --ring: #ffffff;
+        --bg: #f7f7f8;
+        --text: #222222;
+        --accent: #333333;
+      }
+
+      html, body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .container {
+        width: min(92vw, 760px);
+        text-align: center;
+      }
+
+      h1 {
+        font-size: 24px;
+        margin: 16px 0 24px;
+      }
+
+      .wheel-wrapper {
+        position: relative;
+        width: 420px;
+        height: 420px;
+        margin: 0 auto;
+      }
+
+      /* 旋转的对象使用 Canvas 本体 */
+      #wheelCanvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        border-radius: 50%;
+        box-shadow: 0 6px 18px rgba(0,0,0,0.12), inset 0 0 0 6px var(--ring);
+        background: #fff;
+        will-change: transform;
+      }
+
+      /* 顶部指针（朝下的三角形） */
+      .pointer {
+        position: absolute;
+        top: -6px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 0; height: 0;
+        border-left: 14px solid transparent;
+        border-right: 14px solid transparent;
+        border-bottom: 28px solid var(--accent);
+        filter: drop-shadow(0 2px 2px rgba(0,0,0,0.2));
+      }
+
+      .controls {
+        margin-top: 24px;
+      }
+
+      button {
+        padding: 10px 20px;
+        font-size: 16px;
+        border-radius: 8px;
+        border: none;
+        color: #fff;
+        background: #6366f1;
+        cursor: pointer;
+        box-shadow: 0 4px 12px rgba(99,102,241,0.35);
+        transition: transform .08s ease;
+      }
+      button:hover { transform: translateY(-1px); }
+      button:active { transform: translateY(0); }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+      /* 结果弹窗 */
+      .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.35);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+      }
+      .modal {
+        width: min(88vw, 360px);
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+        padding: 20px;
+        text-align: center;
+      }
+      .modal h2 { margin: 0 0 8px; font-size: 20px; }
+      .modal .value { font-size: 36px; font-weight: 700; margin: 6px 0 18px; }
+      .modal .actions { display: flex; gap: 12px; justify-content: center; }
+      .modal .actions button.retry { background: #10b981; }
+      .modal .actions button.close { background: #ef4444; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>二值转盘（20等分，打/不打各10）</h1>
+      <div class="wheel-wrapper">
+        <canvas id="wheelCanvas" width="420" height="420"></canvas>
+        <div class="pointer" aria-hidden="true"></div>
+      </div>
+      <div class="controls">
+        <button id="spinBtn">抽奖</button>
+      </div>
+    </div>
+
+    <!-- 结果弹窗 -->
+    <div id="resultOverlay" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="resultTitle">
+      <div class="modal">
+        <h2 id="resultTitle">抽奖结果</h2>
+        <div id="resultValue" class="value">—</div>
+        <div class="actions">
+          <button class="retry" id="retryBtn">再抽一次</button>
+          <button class="close" id="closeBtn">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // 基本参数
+      const TOTAL = 20;           // 总等分
+      const DEG_PER = 360 / TOTAL; // 每一等分的角度 = 18°
+
+      const canvas = document.getElementById('wheelCanvas');
+      const ctx = canvas.getContext('2d');
+      const size = canvas.width; // 正方形
+      const center = size / 2;
+      const radius = center - 8; // 留白用于描边
+
+      const spinBtn = document.getElementById('spinBtn');
+      const overlay = document.getElementById('resultOverlay');
+      const resultValueEl = document.getElementById('resultValue');
+      const retryBtn = document.getElementById('retryBtn');
+      const closeBtn = document.getElementById('closeBtn');
+
+      // 构造 20 等分，打/不打交替（各 10 个）
+      const sectors = Array.from({ length: TOTAL }, (_, i) => {
+        const isHit = i % 2 === 0; // 偶数索引为“打”，奇数为“不打”
+        return {
+          label: isHit ? '打' : '不打',
+          color: isHit ? getColor('--color-yes') : getColor('--color-no'),
+        };
+      });
+
+      function getColor(varName) {
+        return getComputedStyle(document.documentElement)
+          .getPropertyValue(varName).trim() || '#ccc';
+      }
+
+      // 绘制转盘：20 等分 + 文本
+      function drawWheel() {
+        ctx.clearRect(0, 0, size, size);
+
+        ctx.save();
+        ctx.translate(center, center);
+        ctx.beginPath();
+        ctx.arc(0, 0, radius + 6, 0, Math.PI * 2);
+        ctx.strokeStyle = getColor('--ring');
+        ctx.lineWidth = 8;
+        ctx.stroke();
+        ctx.restore();
+
+        for (let i = 0; i < TOTAL; i++) {
+          const startDeg = i * DEG_PER;
+          const endDeg = (i + 1) * DEG_PER;
+          const startRad = (Math.PI / 180) * startDeg;
+          const endRad = (Math.PI / 180) * endDeg;
+
+          // 扇形填充
+          ctx.beginPath();
+          ctx.moveTo(center, center);
+          ctx.arc(center, center, radius, startRad, endRad);
+          ctx.closePath();
+          ctx.fillStyle = sectors[i].color;
+          ctx.fill();
+
+          // 扇形边界线
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          // 文本：沿半径方向居中
+          const midDeg = startDeg + DEG_PER / 2; // 中心角度
+          const midRad = (Math.PI / 180) * midDeg;
+          const textR = radius * 0.65; // 文本半径位置
+
+          ctx.save();
+          ctx.translate(center, center);
+          ctx.rotate(midRad);
+          ctx.fillStyle = '#111';
+          ctx.font = 'bold 24px system-ui, -apple-system, Segoe UI, Microsoft YaHei, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(sectors[i].label, textR, 0);
+          ctx.restore();
+        }
+
+        // 中心装饰圆
+        ctx.beginPath();
+        ctx.arc(center, center, 28, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+      drawWheel();
+
+      // 旋转控制
+      let spinning = false;
+      let currentRotation = 0; // 累计旋转角度（deg）
+
+      function openModal(value) {
+        resultValueEl.textContent = value;
+        overlay.style.display = 'flex';
+        // 禁用按钮直到关闭或重试
+        spinBtn.disabled = true;
+      }
+
+      function closeModal() {
+        overlay.style.display = 'none';
+        spinBtn.disabled = false;
+      }
+
+      function pickRandomIndex() {
+        return Math.floor(Math.random() * TOTAL);
+      }
+
+      function spin() {
+        if (spinning) return;
+        spinning = true;
+        spinBtn.disabled = true;
+
+        const selectedIndex = pickRandomIndex();
+        const selectedLabel = sectors[selectedIndex].label;
+
+        // 在该等分内随机微调（0~DEG_PER）确保落点在选中扇区范围内
+        const offsetInSector = Math.random() * DEG_PER; // [0, 18)
+
+        // 让选中等分的某一点对齐到指针方向（页面顶部方向 = -90°）
+        const targetAngle = -90 - (selectedIndex * DEG_PER + offsetInSector);
+
+        // 计算最终旋转角度：保持单调增加，避免回转突兀
+        const base = currentRotation;
+        const normBase = ((base % 360) + 360) % 360; // 0..359
+        const deltaToTarget = ((targetAngle - normBase) % 360 + 360) % 360; // 0..359
+
+        const spins = 5 + Math.floor(Math.random() * 3); // 5~7 圈
+        const nextRotation = base + spins * 360 + deltaToTarget;
+
+        // 动画时长随圈数略增
+        const duration = 4 + spins * 0.3; // 秒
+
+        canvas.style.transition = `transform ${duration}s cubic-bezier(0.23, 1, 0.32, 1)`; // easeOut
+        canvas.style.transform = `rotate(${nextRotation}deg)`;
+
+        const onEnd = () => {
+          canvas.removeEventListener('transitionend', onEnd);
+          currentRotation = nextRotation;
+          spinning = false;
+          openModal(selectedLabel);
+        };
+        canvas.addEventListener('transitionend', onEnd, { once: true });
+      }
+
+      // 事件绑定
+      spinBtn.addEventListener('click', spin);
+      retryBtn.addEventListener('click', () => {
+        closeModal();
+        // 稍作延迟，避免连续 transition 事件冲突
+        setTimeout(spin, 50);
+      });
+      closeBtn.addEventListener('click', () => {
+        closeModal();
+      });
+      overlay.addEventListener('click', (e) => {
+        // 点击空白处也可关闭
+        if (e.target === overlay) {
+          closeModal();
+        }
+      });
+    </script>
+  </body>
+  </html>
