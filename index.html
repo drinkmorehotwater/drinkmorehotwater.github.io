@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>请求起飞</title>
+    <title>想喝奶茶</title>
     <style>
       :root {
-        --color-yes: #ff6b6b; /* 打 */
-        --color-no: #4ecdc4;  /* 不打 */
+        --color-yes: #ff6b6b; /* 喝 */
+        --color-no: #4ecdc4;  /* 不喝 */
         --ring: #ffffff;
         --bg: #f7f7f8;
         --text: #222222;
@@ -153,11 +153,11 @@
       const retryBtn = document.getElementById('retryBtn');
       const closeBtn = document.getElementById('closeBtn');
 
-      // 构造 20 等分，打/不打交替（各 10 个）
+      // 构造 20 等分，喝/不喝交替（各 10 个）
       const sectors = Array.from({ length: TOTAL }, (_, i) => {
-        const isHit = i % 2 === 0; // 偶数索引为“打”，奇数为“不打”
+        const isHit = i % 2 === 0; // 偶数索引为“喝”，奇数为“不喝”
         return {
-          label: isHit ? '打' : '不打',
+          label: isHit ? '喝' : '不喝',
           color: isHit ? getColor('--color-yes') : getColor('--color-no'),
         };
       });
